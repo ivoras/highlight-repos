@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+import sys, os, os.path
+from getopt import getopt
+import html
+from markdown import markdown
+
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+env = Environment(
+    loader=FileSystemLoader("templates"),
+    autoescape=select_autoescape()
+)
+
+def main():
+    input_dir = None
+    output_dir = None
+    extensions = [".go", ".js", ".ts", ".tsx"]
+    ignore_files = [".git", "node_modules", ".gif", ".jpeg", ".jpg", ".png", ".svg", "__pycache__", ".pyc", "dist/"]
+
+    opts, args = getopt(sys.argv[1:], "e:i:o:")
+    for o, a in opts:
+        if o == '-e':
+            extensions = ["." + x for x in a.split(",")]
+        elif o == '-i':
+            input_dir = a
+        elif o == '-o':
+            output_dir = a
+        else:
+            help()
+            return
+
+    if input_dir == None or output_dir == None:
+        help()
+        sys.exit(1)
+
+    if not os.path.isdir(input_dir):
+        print("Path not found or not a directory:", input_dir)
+        sys.exit(1)
+
+    if not os.path.isdir(output_dir):
+        print("Path not found or not a directory:", output_dir)
+
+    if input_dir[-1] == '/':
+        input_dir = input_dir[:-1]
+
+    process_dir(input_dir, output_dir, extensions, ignore_files)
+
+
+def help():
+    print("Expecting arguments: -i <input_dir> -o <output_dir>")
+
+
+def process_dir(input_dir, output_dir, extensions, ignore_files):
+    file_list = []
+    file_list.append({"type": "D", "path": "", "name": "*root*" })
+    for root, dirs, files in os.walk(input_dir):
+        if is_ignored(root, ignore_files):
+            continue
+        xroot = root[len(input_dir):]
+        for d in dirs:
+            if is_ignored(d, ignore_files):
+                continue
+            file_list.append({"type": "D", "path": xroot+"/"+d, "name": d})
+        for f in files:
+            if is_ignored(f, ignore_files):
+                continue
+            file_list.append({"type": "F", "path": xroot+"/"+f, "name": f})
+    file_list.sort(reverse=False, key=lambda x: x['path'])
+
+#    for f in file_list:
+#        print(f)
+
+    tpl = env.get_template("page.html")
+    for f in file_list:
+        if f['type'] == 'D':
+            f['out_filename'] = f['path'] + "/index.html"
+        elif f['type'] == 'F':
+            f['out_filename'] = f['path'] + ".html"
+        xdir, xfile = os.path.split(f['out_filename'])
+        out_dir = output_dir + xdir[1:]
+        #print(f, xdir, xfile, out_dir)
+        if not os.path.exists(out_dir):
+            os.mkdir(out_dir, 0o755)
+
+    for f in file_list:
+        ctx = {
+            "files": file_list,
+            "name": f['path'],
+            "title": f['name'],
+            "dots": "../" * (f['out_filename'].count("/")-1),
+        }
+        if f['type'] == 'F':
+            try:
+                with open(input_dir + f['path'], "rt") as ff:
+                    ctx['text'] = html.escape(ff.read())
+            except:
+                print("Cannot read", f['path'])
+        elif f['type'] == 'D':
+            readme_file = input_dir + f['path'] + '/README.md'
+            if os.path.exists(readme_file):
+                ctx['name'] += " README.md"
+                with open(readme_file, "rt") as ff:
+                    ctx["content"] = markdown(ff.read())
+
+        if 'text' in ctx:
+            ctx['language'] = guess_language(input_dir + f['path'], ctx['text'])
+
+        with open("%s%s" % (output_dir, f['out_filename'][1:]), "wt") as ff:
+            ff.write(tpl.render(ctx))
+
+
+
+def is_ignored(fn, ignore_files):
+    for fi in ignore_files:
+        #print(fn, fi, fn.find(fi))
+        if fn.find(fi) != -1:
+            return True
+    return False
+
+
+def guess_language(fn, text):
+    path_parts = fn.split('/')
+    parts = path_parts[-1].split('.')
+    if len(parts) > 1:
+        return parts[-1]
+    if parts[-1] in ('Dockerfile', 'Makefile'):
+        return parts[-1].lower()
+    p = text.find("\n")
+    if p == -1:
+        line1 = text
+    else:
+        line1 = text[:p]
+    if len(line1.strip()) == '':
+        return "text"
+    if line1[0] == '#':
+        if line1.find('python') != -1:
+            return 'python'
+        elif line1.find('sh') != -1:
+            return 'sh'
+    return "text"
+
+
+if __name__ == '__main__':
+    main()
